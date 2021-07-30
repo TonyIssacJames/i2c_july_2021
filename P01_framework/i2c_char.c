@@ -21,12 +21,14 @@ static int my_close(struct inode *i, struct file *f)
 static ssize_t my_read(struct file *f, char __user *buf, size_t count, loff_t *off)
 {
 	// TODO: Add the code here
+	i2c_receive(NULL, count);
 	return 0;
 }
 
 static ssize_t my_write(struct file *f, const char __user *buf, size_t count, loff_t *off)
 {
 	// TODO: Add the code here
+	i2c_transmit(NULL, count);
 	return count;
 }
 
@@ -42,6 +44,7 @@ static struct file_operations driver_fops =
 int chrdrv_init(struct omap_i2c_dev *i2c_dev)
 {
 	static int i2c_num = 0;
+	struct device *dev_ret = NULL;
 	int init_result = alloc_chrdev_region(&i2c_dev->devt, 0, 1, "i2c_drv");
 
 	if (0 > init_result)
@@ -52,8 +55,34 @@ int chrdrv_init(struct omap_i2c_dev *i2c_dev)
 	printk("Major Nr: %d\n", MAJOR(i2c_dev->devt));
 
 	// TODO: Create the device file
+	
+	dev_ret = device_create(i2c_dev->i2c_class, NULL, i2c_dev->devt, NULL, "myi2c");
 
+
+
+	if (!dev_ret)
+	{
+		unregister_chrdev_region(i2c_dev->devt, 1);
+	
+		printk(KERN_ALERT "Device File Creation failed failed\n");
+		return -1;
+	}
+	printk("Is device created: %x\n", dev_ret);
+	
 	// TODO: Register the file_operations
+	cdev_init(&i2c_dev->cdev, &driver_fops);
+	
+	init_result = cdev_add(&i2c_dev->cdev, i2c_dev->devt, 1);
+	if (0 > init_result)
+	{
+		cdev_del(&i2c_dev->cdev);
+		device_destroy(i2c_dev->i2c_class, i2c_dev->devt);
+		unregister_chrdev_region(i2c_dev->devt, 1);
+
+		printk(KERN_ALERT "Registering  File Operations failed\n");
+		return -1;
+	}
+	
 	return 0;
 }
 
@@ -61,6 +90,14 @@ void chrdrv_exit(struct omap_i2c_dev *i2c_dev)
 {
 	// TODO: Delete the device file
 	// TODO: Unregister file operations
+	cdev_del(&i2c_dev->cdev);
+	device_destroy(i2c_dev->i2c_class, i2c_dev->devt);
+	
 	// TODO: Unregister character driver
+	unregister_chrdev_region(i2c_dev->devt, 1);
+	
+			
+		
+	printk(KERN_ALERT "Uneregister Char Driver\n");
 }
 
