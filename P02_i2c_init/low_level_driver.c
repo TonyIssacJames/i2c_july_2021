@@ -21,6 +21,9 @@
  * sending a single character on the bus
  */
 
+#define OMAP_I2C0_BASE      0x44E0B000
+#define OMAP_I2C0_REG_SIZE  0x1000        //4KB
+
 static struct omap_i2c_dev i2c_dev;
 
 inline void omap_i2c_write_reg(struct omap_i2c_dev *i2c_dev,
@@ -106,7 +109,10 @@ int i2c_transmit(struct i2c_msg *msg, size_t count)
 	//Set the TX FIFO Threshold to 0 and clear the FIFO's
 	omap_i2c_write_reg(&i2c_dev, OMAP_I2C_BUF_REG, 0);
 	//TODO: Update the slave addresss register with 0x50
+	omap_i2c_write_reg(&i2c_dev, OMAP_I2C_SA_REG, 0x50);
 	//TODO: Update the count register with 1
+	omap_i2c_write_reg(&i2c_dev, OMAP_I2C_CNT_REG, 1);
+
 	printk("##### Sending %d byte(s) on the I2C bus ####\n", cnt);
 
 	/*
@@ -116,6 +122,9 @@ int i2c_transmit(struct i2c_msg *msg, size_t count)
 	 * The naming convention for the bits is OMAP_I2C_<REG NAME>_<BIT NAME>
 	 * So, for start bit, the macro is OMAP_I2C_CON_STT. Check I2c_char.h for other bits
 	 */
+	w = OMAP_I2C_CON_MST | OMAP_I2C_CON_EN| OMAP_I2C_CON_TRX| OMAP_I2C_CON_STT |OMAP_I2C_CON_STP;
+
+	omap_i2c_write_reg(&i2c_dev, OMAP_I2C_CON_REG, w);
 
 	while (k--) {
 		// Wait for status to be updated
@@ -127,15 +136,18 @@ int i2c_transmit(struct i2c_msg *msg, size_t count)
 		//TODO: Check the status to verify if XRDY is received
 		//TODO: Update the data register with data to be transmitted
 		//TODO: Clear the XRDY event with omap_i2c_ack_stat
-		if (status) {
+		if (status& OMAP_I2C_STAT_XRDY) {
 			printk("Got XRDY\n");
+			omap_i2c_write_reg(&i2c_dev, OMAP_I2C_DATA_REG, 0x11);
+			omap_i2c_ack_stat(&i2c_dev, OMAP_I2C_STAT_XRDY);
 			continue;   
 		}
 
 		//TODO: Check the status to verify if ARDY is received
 		//TODO: Clear the XRDY event with omap_i2c_ack_stat
-		if (status) {	
+		if (status& OMAP_I2C_STAT_ARDY) {	
 			printk("Got ARDY\n");
+			omap_i2c_ack_stat(&i2c_dev, OMAP_I2C_STAT_ARDY);
 			break;
 		}
 	}
@@ -165,7 +177,7 @@ static void omap_i2c_set_speed(struct omap_i2c_dev *dev)
 	/* Compute prescaler divisor */
 	psc = fclk_rate / internal_clk;
 	//TODO: Update the prescalar register with psc - 1
-
+	omap_i2c_write_reg(dev, OMAP_I2C_PSC_REG, psc-1);
 	// Hard coding the speed to 400KHz
 	dev->speed = 400;
 	scl = internal_clk / dev->speed;
@@ -175,6 +187,8 @@ static void omap_i2c_set_speed(struct omap_i2c_dev *dev)
         sclh = scl - 5;
 
 	//TODO: Update the SCL low and high registers as per above calculations
+	omap_i2c_write_reg(dev, OMAP_I2C_SCLL_REG, scll);
+	omap_i2c_write_reg(dev, OMAP_I2C_SCLH_REG, sclh);
 }
 
 int omap_i2c_init(struct omap_i2c_dev *dev)
@@ -186,8 +200,11 @@ int omap_i2c_init(struct omap_i2c_dev *dev)
 	omap_i2c_write_reg(dev, OMAP_I2C_CON_REG, OMAP_I2C_CON_EN);
 	
 	// TODO: Update the 'iestate' field with desired events such as XRDY
+	dev->iestate = OMAP_I2C_IE_XRDY|OMAP_I2C_IE_ARDY|\
+				   OMAP_I2C_IE_RRDY| OMAP_I2C_IE_NACK;
 	// TODO: Update the OMAP_I2C_IE_REG register
-
+	omap_i2c_write_reg(dev, OMAP_I2C_IE_REG, dev->iestate);
+	
 	flush_fifo(dev);
 	omap_i2c_write_reg(dev, OMAP_I2C_STAT_REG, 0XFFFF);
 	omap_i2c_wait_for_bb(dev);
@@ -197,12 +214,32 @@ int omap_i2c_init(struct omap_i2c_dev *dev)
 
 static int __init omap_i2c_init_driver(void)
 {
+	int ret;
+	/* Char interface related initialization */
+	i2c_dev.i2c_class = NULL;
+	// TODO: Create the class with name i2cdrv
+	i2c_dev.i2c_class = class_create(THIS_MODULE, "i2cdrv");
+	
+	if(!i2c_dev.i2c_class)
+	{
+		printk(KERN_ALERT "Creating class i2cdrv failed\n");
+		return -1;
+	}
+	// TODO: Initialize the character driver interface
+	ret =  chrdrv_init(&i2c_dev);
+	if(ret < 0)
+	{
+		class_destroy(i2c_dev.i2c_class);
+		printk(KERN_ALERT "Initialize the character driver interface failed\n");
+		return -1;
+	}
 	/*
 	 * TODO: Get the virtual address for the i2c0 base address and store it
 	 * in 'base' field of omap_i2c_dev. 
 	 * Use API void __iomem* ioremap((resource_size_t offset, unsigned long size)
 	*/
-
+	i2c_dev.base = ioremap(OMAP_I2C0_BASE, OMAP_I2C0_REG_SIZE);
+	
 	i2c_dev.regs = (u8 *)reg_map_ip_v2;
 	omap_i2c_init(&i2c_dev);
 
@@ -211,6 +248,10 @@ static int __init omap_i2c_init_driver(void)
 
 static void __exit omap_i2c_exit_driver(void)
 {
+	// TODO: De-initialize the character driver interface
+	chrdrv_exit(&i2c_dev);
+	// TODO: Delete the i2cdrv class
+	class_destroy(i2c_dev.i2c_class);
 }
 
 module_init(omap_i2c_init_driver);
